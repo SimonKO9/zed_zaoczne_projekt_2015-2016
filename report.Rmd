@@ -1,0 +1,150 @@
+---
+title: "report"
+author: "Szymon Kownacki"
+date: "January 12, 2016"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+Załadowanie potrzebnych bibliotek
+```{r, message = FALSE, warning=FALSE, results='hide'}
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+library(gridExtra)
+library(reshape2)
+```
+
+Lista wykorzystanych bibliotek
+```{r}
+search()
+```
+
+Zapewnienie powtarzalności wyników
+```{r}
+set.seed(747)
+```
+
+Załadowanie zbioru danych
+```{r, message="Load and cache DF", cache=TRUE}
+df <- read.csv("all_summary.txt", header = TRUE, sep = ";")
+```
+
+Usunięcie rekordów zawierających res_name = ["DA","DC","DT", "DU", "DG", "DI","UNK", "UNX", "UNL", "PR", "PD", "Y1", "EU", "N", "15P", "UQ", "PX4", "NAN"]
+```{r, message="Clean records"}
+resNamesToFilterOut <- c("DA","DC","DT", "DU", "DG", "DI","UNK", "UNX", "UNL", "PR", "PD", "Y1", "EU", "N", "15P", "UQ", "PX4", "NAN")
+namesFiltered <- df %>% filter(!is.element(res_name, resNamesToFilterOut))
+```
+
+Wyliczenie unikatowych par wartości (pdb_code, res_name)
+```{r, message="Compute distinct (res_name, pdb_code) pairs"}
+distinctPdbAndResName <- namesFiltered %>% select(c(pdb_code, res_name)) %>% distinct()
+```
+
+Ile przykładów na każda z klas
+```{r, message="pdb_code and res_name summary"}
+counts <- count(distinctPdbAndResName, res_name)
+knitr::kable(arrange(counts, desc(n)))
+```
+
+Wykresy rozkładów liczby atomów i elektronów
+```{r, message="Atom and electron distribution plots"}
+dataForAtomElectronPlot <- namesFiltered
+
+ggplot() + geom_histogram(data = dataForAtomElectronPlot, mapping = aes(x = local_res_atom_non_h_count), bins = 50) + ggtitle("Histogram ilości atomów") + xlab("Liczba atomów") + ylab("Ilość wystąpień")
+
+ggplot() + geom_histogram(data = dataForAtomElectronPlot, mapping = aes(x = local_res_atom_non_h_electron_sum), bins = 50) + ggtitle("Histogram ilości elektronów") + xlab("Liczba elektronów") + ylab("Ilość wystąpień")
+```
+
+Rekonstrukcja wykresu
+```{r, message="Plot reconstruction"}
+spectral_colors <- colorRampPalette(rev(RColorBrewer::brewer.pal(11, "Spectral")))
+spectral_scale_fill <- scale_fill_gradientn(colours = spectral_colors(128))
+
+empty_theme <- theme(axis.line=element_blank(), axis.text.x=element_blank(),
+          axis.text.y=element_blank(), axis.ticks=element_blank(),
+          axis.title.x=element_blank(), axis.title.y=element_blank(), 
+          legend.position="none",
+          panel.background=element_blank(), panel.border=element_blank(), panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(), plot.background=element_blank())
+  
+
+density_both_plot <- ggplot(data = dataForAtomElectronPlot, 
+                            mapping = aes(x = local_res_atom_non_h_electron_sum, y = local_res_atom_non_h_count)) + 
+  stat_density2d(mapping = aes(fill = ..density..), contour = FALSE, geom = "raster") + 
+  spectral_scale_fill + theme_classic() + 
+  theme(panel.background = element_rect(fill = "#5E4FA2"), legend.position="NONE", axis.title.x = element_blank(), axis.title.y = element_blank()) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(-1, 600)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(-1, 100))
+
+density_atom_plot <- ggplot(data = dataForAtomElectronPlot, mapping = aes(local_res_atom_non_h_count)) + stat_bin(colour = "black", fill = "red", geom="bar", bins=100) + empty_theme + coord_flip(c(0, 120))
+
+density_electron_plot <- ggplot(data = dataForAtomElectronPlot, mapping = aes(local_res_atom_non_h_electron_sum)) + stat_bin(colour = "black", fill = "red", geom="bar", bins=100) + empty_theme
+
+empty_plot <- ggplot(data = data.frame(x = c(0))) + theme(panel.background=element_rect(fill = "white"))
+
+grid.arrange(density_electron_plot, empty_plot, density_both_plot, density_atom_plot, ncol=2, nrow=2, widths=c(4, 1), 
+                 heights=c(1, 4))
+
+
+```
+
+Klasy z największą niezgodnością liczby atomów
+```{r}
+diff_atoms_per_class <- namesFiltered %>% select(res_name, local_res_atom_non_h_count, dict_atom_non_h_count) %>% 
+  mutate(diff = local_res_atom_non_h_count - dict_atom_non_h_count) %>% 
+  mutate(diff2 = diff * diff) %>%
+  group_by(res_name) %>% 
+  summarize(var = mean(diff2), sd = sqrt(var)) %>%
+  arrange(desc(sd))
+
+top10_diff_atom_classes <- head(diff_atoms_per_class, 10)
+knitr::kable(top10_diff_atom_classes, 
+             col.names=c("Nazwa", "Wariancja niezgodności liczby atomów", "Odchylenie standardowe niezgodności liczby atomów"))
+```
+
+Klasy z największą niezgodnością liczby elektronów
+```{r}
+diff_electrons_per_class <- namesFiltered %>% select(res_name, local_res_atom_non_h_electron_sum, dict_atom_non_h_electron_sum) %>% 
+  mutate(diff = local_res_atom_non_h_electron_sum - dict_atom_non_h_electron_sum) %>% 
+  mutate(diff2 = diff * diff) %>%
+  group_by(res_name) %>% 
+  summarize(var = mean(diff2), sd = sqrt(var)) %>%
+  arrange(desc(sd))
+
+top10_diff_electron_classes <- head(diff_electrons_per_class, 10)
+knitr::kable(top10_diff_electron_classes, 
+             col.names=c("Nazwa", "Wariancja niezgodności liczby elektronów", "Odchylenie standardowe niezgodności liczby elektronów"))
+```
+
+Tabela przedstawiająca statystyki atrybutów part_* (średnia, odchylenie standardowe i stosunek odchylenia standardowego do średniej)
+```{r}
+all_cols <- c(colnames(namesFiltered))
+part_cols <- all_cols[grep("^part_[0-9]+", all_cols)]
+df_part_cols <- namesFiltered[, part_cols]
+melted <- melt(df_part_cols) %>% filter(!is.na(value)) %>% filter(value > 0)
+
+melted_with_statistics <- melted %>% group_by(variable) %>% 
+  filter(abs(mean(value) - value) < 3 * sd(value)) %>%
+  summarise(mean = mean(value), sd = sd(value), sd_div_mean = sd/mean) %>% 
+  arrange(desc(sd_div_mean)) 
+
+knitr::kable(melted_with_statistics)
+```
+
+Wykresy prezentujące rozkład 10 atrybutów o największym stosunku odchylenia standardowego do średniej
+```{r}
+top10_sd_div_mean <- head(melted_with_statistics, 10)
+data_for_presentation <- melted %>% 
+  group_by(variable) %>%
+  filter(variable %in% top10_sd_div_mean$variable) %>%
+  filter(abs(mean(value) - value) < sd(value)) %>%
+  ungroup()
+
+ggplot(data = data_for_presentation, mapping = aes(value)) + 
+  scale_y_log10() +
+  geom_histogram(bins = 10, position = "identity") +
+  facet_wrap(~variable, scales="free", ncol = 2, nrow = 5) + theme_classic() +
+  ylab("log10(ilość)") + xlab("Wartość atrybutu")
+```
